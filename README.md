@@ -19,10 +19,12 @@ CyC-production PGS versus mortality or lifespan
 /prs/UKB CyC-production PGS.Rmd
 
 (c) Phenome-wide association in UK Biobank
+/prs/UKB PheWAS.R
 
 (d)(e) Cancer-specific mortality analyses in UK Biobank and TCGA
 /tcga_gtex/TCGA and GTEX germline data processing.ipynb - quality control for TCGA/GTEX genotype data
 /prs/PGS analysis TCGA GTEX.ipynb - PGS analysis in TCGA
+/prs/UKB PheWAS.R
 
 Figure 3
 
