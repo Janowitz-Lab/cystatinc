@@ -1,4 +1,4 @@
-Figure 1
+**Figure 1**
 
 (c) (d) 
 Genome-wide association analysis and structural equation modeling 
@@ -12,7 +12,7 @@ Genome-wide association analysis and structural equation modeling
 Validation of CyC-production PGS
 /prs/UKB CyC-production PGS.Rmd
 
-Figure 2
+**Figure 2**
 
 (a) (b) (c) 
 CyC-production PGS versus mortality or lifespan
@@ -26,7 +26,7 @@ CyC-production PGS versus mortality or lifespan
 /prs/PGS analysis TCGA GTEX.ipynb - PGS analysis in TCGA
 /prs/UKB PheWAS.R
 
-Figure 3
+**Figure 3**
 
 (a) 
 eQTS analysis in GTEX
@@ -37,13 +37,13 @@ eQTS analysis in GTEX
 Single-cell analyses in human samples
 /scRNA-seq/Human scRNA-seq analysis workflow.ipynb
 
-Figure 5
+**Figure 5**
 
 (e) 
 Single-cell analyses in human samples
 /scRNA-seq/Human scRNA-seq analysis workflow.ipynb
 
-Figure 6
+**Figure 6**
 
 (e) (f) 
 Single cell RNA sequencing analysis of murine Mm1 tumors
@@ -54,19 +54,19 @@ Application of PGS to immunotherapy-treated patients (panIO cohort)
 /panIO/panIO cohort processing.ipynb - quality control for panIO genotype data, exclusion of related subjects, identification of ancestry populations, TOPMED
 /panIO/CyC-production PGS in panIO.R - prognostic performance of CyC-production PGS in PanIO cohort
 
-Figure S3
+**Figure S3**
 
 (b) 
 /tcga_gtex/TCGA and GTEX germline data processing.ipynb - quality control for TCGA/GTEX genotype data
 /prs/PGS analysis TCGA GTEX.ipynb - GTEX RNA-seq analysis workflow
 
-Figure S4
+**Figure S4**
 
 (a) 
 /tcga_gtex/TCGA and GTEX germline data processing.ipynb - quality control for TCGA/GTEX genotype data
 /prs/PGS analysis TCGA GTEX.ipynb - GTEX PGS versus RNA-seq analysis workflow
 
-Figure S7
+**Figure S7**
 
 (a) (b)
 /scRNA-seq/Mm1 scRNA-seq analysis.ipynb - processing and downstream analysis of 10X Genomics sequencing data
@@ -75,7 +75,7 @@ Figure S7
 Single cell RNA sequencing analysis of COVID-19 blood samples
 /scRNA-seq/scRNA COVID-19 TREM2.ipynb
 
-Figure S8
+**Figure S8**
 
 Single-cell analyses in human samples
 /scRNA-seq/Human scRNA-seq analysis workflow.ipynb
