@@ -1,0 +1,561 @@
+---
+title: "Biobank cystatin C analysis"
+author: "Sam Kleeman"
+date: "11/20/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ukbtools)
+library(matrixStats)
+library(readr)
+library(tidyr)
+library(dplyr)
+library(reshape2)
+library(fst)
+library(tidyverse)
+library(nephro)
+library(ggplot2)
+library(ggpubr)
+```
+
+# Import data
+
+```{r import, include = FALSE}
+df <- fst("data/biobank_whole.fst")
+
+
+#Survival data
+
+survival <- data.frame(id=df$eid,sex=df$sex_f31_0_0, height=df$standing_height_f50_0_0, date_of_death=df$date_of_death_f40000_0_0, dead=ifelse(is.na(df$age_at_death_f40007_0_0),0,1), days_to_death=(df$date_of_death_f40000_0_0 - df$date_of_attending_assessment_centre_f53_0_0), cause=df$description_of_cause_of_death_f40010_0_0, year_of_birth=df$year_of_birth_f34_0_0)
+
+survival<- survival %>% dplyr::select("id","sex","height","date_of_death","dead","year_of_birth")
+
+
+#Cystatin C data
+id_codes=c("date_of_attending_assessment_centre_f53", "weight_f21002","body_mass_index_bmi_f21001","creatinine_f30700","cystatin_c_f30720","age_when_attended_assessment_centre_f21003","creactive_protein_f30710","haemoglobin_concentration_f30020", "monocyte_count_f30130")
+
+
+my_data <- list()
+
+for(i in 1:length(id_codes)) {
+  sub<-df[,grepl(paste(c("eid",id_codes[i]), collapse="|"), names(df))]
+  long <- melt(sub, id.vars="eid")
+  long$variable <- sub('.*_', '', gsub('_0(.*)','\\1',long$variable))
+
+  names(long)<-c("eid","visit",id_codes[i])
+  my_data[[i]] <- long
+}
+
+
+collated<-my_data %>% purrr::reduce(full_join, by = c("eid","visit"))
+collated<-collated[rowSums(!is.na(collated)) > 2,]
+names(collated)[1]<-"id"
+
+collated<-left_join(collated, survival, by="id")
+
+#Days until death
+
+collated$time<-NA
+
+collated$time[is.na(collated$date_of_death) == TRUE] = as.Date(as.character("2020-06-01"), format="%Y-%m-%d") - as.Date(as.character(collated$date_of_attending_assessment_centre_f53[is.na(collated$date_of_death) == TRUE]), format="%Y-%m-%d")
+collated$time[is.na(collated$date_of_death) == FALSE] =  as.Date(as.character(collated$date_of_death[is.na(collated$date_of_death) == FALSE]), format="%Y-%m-%d") - as.Date(as.character(collated$date_of_attending_assessment_centre_f53[is.na(collated$date_of_death) == FALSE]), format="%Y-%m-%d")
+collated$time<-collated$time/30.5 #months rather than days
+
+
+#Age at death
+
+collated$age_at_death<-NA
+collated$age_at_death[is.na(collated$date_of_death) == TRUE] = 2020 - collated$year_of_birth[is.na(collated$date_of_death) == TRUE]
+collated$age_at_death[is.na(collated$date_of_death) == FALSE] = 2020 - as.numeric(format(as.Date(as.character(collated$date_of_death[is.na(collated$date_of_death) == FALSE]), format="%Y-%m-%d"),"%Y"))
+
+
+#Calculate cortiscore
+
+collated$ethnicity<-0
+
+collated <- collated %>% tidyr::drop_na(c("sex", "creatinine_f30700", "age_when_attended_assessment_centre_f21003", "cystatin_c_f30720")) %>% mutate(sex = ifelse(sex=="Male",1,0)) %>% mutate(egfr_creatinine=CKDEpi.creat((creatinine_f30700*0.0113),sex, age_when_attended_assessment_centre_f21003, ethnicity), egfr_cystatin = CKDEpi.cys((cystatin_c_f30720),sex, age_when_attended_assessment_centre_f21003))
+
+model<- lm(egfr_cystatin ~ 0 + egfr_creatinine + sex, data = collated)
+collated$cortiscore = -resid(model)
+
+collated$scale_cortiscore = scale2(collated$cortiscore)
+collated$scale_monocyte = log(collated$monocyte_count_f30130+0.01)
+
+ggplot(data=collated,aes(scale_monocyte,scale_cortiscore)) +
+    geom_hex(bins = 300) +
+    scale_fill_continuous(type = "viridis") +
+    theme_bw()+ 
+    geom_smooth(method='lm', formula= y~x, color='black',size=0.3, se=F)+ theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.text.y=element_text(colour="black"),axis.text.x=element_text(colour="black"))+xlab("log(Monocyte count)")+ylab("CyC-residual (Z-score)")
+
+library(MASS)
+library(ggplot2)
+library(viridis)
+library(ggrastr)
+collated = subset(collated, is.na(scale_monocyte)==FALSE & is.na(scale_cortiscore)==FALSE)
+collated$density <- get_density(collated$scale_monocyte, collated$scale_cortiscore, n = 100)
+ggplot(data=collated, aes(scale_monocyte, scale_cortiscore)) + rasterise(geom_point(aes(scale_monocyte, scale_cortiscore, color = density), size=0.1), dpi=300) + scale_color_distiller(palette = "Spectral") +
+  theme_bw()+ geom_smooth(method='lm', formula= y~x, color='black',size=0.3, se=F) + theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.text.y=element_text(colour="black"),axis.text.x=element_text(colour="black"))
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figuresup4bnew.pdf', width=4, height=3)
+
+model = lm(scale_monocyte ~ scale_cortiscore + age_when_attended_assessment_centre_f21003 + sex + body_mass_index_bmi_f21001, data = collated)
+
+
+```
+
+
+## Cystatin-Creatinine relationship
+
+```{r cycr,fig.height = 2, fig.width = 2.5}
+cars.lm2 <- lm(egfr_cystatin ~ 0 + egfr_creatinine + sex, data = collated)
+
+library(MASS)
+library(ggplot2)
+library(viridis)
+
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+
+library(ggrastr)
+
+# Bin size control + color palette
+collated$density <- get_density(collated$egfr_creatinine, collated$egfr_cystatin, n = 100)
+ggplot(data=collated) + rasterise(geom_point(aes(egfr_creatinine, egfr_cystatin, color = density), size=0.1), dpi=300) + scale_color_distiller(palette = "Spectral") +
+  theme_bw()+ geom_abline(intercept=0, slope=cars.lm2$coefficients[1], color='black', size=0.3) +xlim(0,150)+ theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.text.y=element_text(colour="black"),axis.text.x=element_text(colour="black"))
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figure1f.pdf', width=6.6, height=3)
+
+#Test in validation cohort with PRS
+
+library(readr)
+library(dplyr)
+
+scale2 <- function(x, na.rm = TRUE) (x - mean(x, na.rm = na.rm)) / sd(x, na.rm)
+#PGS_1e4_RAPIDO <- read_table2("~/Google Drive/PhD/Data/ukbiobank/UKB_UKB380_PGS_inner.sscore")
+#PGS_1e4_RAPIDO <- read_table2("~/Google Drive/PhD/Data/ukbiobank/UKB380_PGS_LDPRED2_UKB_exome.sscore")
+PGS_1e4_RAPIDO <- read_table2("~/Downloads/UKB_META_AFR_inner.sscore")
+
+
+
+names(PGS_1e4_RAPIDO)[2]<-"id"
+PGS_1e4_RAPIDO <- inner_join(PGS_1e4_RAPIDO, collated, by="id")
+PGS_1e4_RAPIDO$SCORE = PGS_1e4_RAPIDO$SCORE1_AVG
+
+#Import additional variables
+populations <- read_csv("~/Google Drive/PhD/Data/ukbiobank/populations.csv")
+PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% subset(populations, pop=="AFR")$s)
+
+validation_cohort <- read_delim("~/Google Drive/PhD/Data/ukbiobank/validation_cohort.tsv", 
+                                "\t", escape_double = FALSE, trim_ws = TRUE)
+
+covariates <- read_table2("~/Google Drive/PhD/Data/ukbiobank/covariates_eur.tsv")
+covariates = covariates[,-4]
+names(covariates)[2]<-"id"
+
+
+#PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% validation_cohort$s)
+#PGS_1e4_RAPIDO = inner_join(PGS_1e4_RAPIDO, covariates, by="id")
+
+#Remove any duplicated cystatin measurements, pick earliest measurement
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[order(PGS_1e4_RAPIDO$visit),]
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[!duplicated(PGS_1e4_RAPIDO$id),]
+
+#Normalize score
+PGS_1e4_RAPIDO$score_scale = scale2(PGS_1e4_RAPIDO$SCORE)
+PGS_1e4_RAPIDO$score_decile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 10))
+PGS_1e4_RAPIDO$score_quartile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 4))
+
+model<- lm(egfr_cystatin ~ 0 + egfr_creatinine + sex, data = collated)
+PGS_1e4_RAPIDO$prediction = predict(model, newdata=PGS_1e4_RAPIDO)
+PGS_1e4_RAPIDO$cortiscore = PGS_1e4_RAPIDO$prediction - PGS_1e4_RAPIDO$egfr_cystatin
+
+PGS_1e4_RAPIDO$cortiscore= scale2(PGS_1e4_RAPIDO$cortiscore)
+
+cor.test(PGS_1e4_RAPIDO$score_scale, PGS_1e4_RAPIDO$cortiscore, method="pearson")
+
+library(ggpubr)
+
+ggboxplot(PGS_1e4_RAPIDO, "score_decile", "cortiscore",
+   color = "black", fill = "grey",outlier.shape = NA)+ylim(-3.7,3.7)+ylab("CyC-residual (Z-score)")+xlab("CyC-production PRS (Z-score)")
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figure1g.pdf', width=5, height=3)
+
+```
+```{r validatepgsnonwhite}
+
+#Test in validation cohort with PRS
+
+library(readr)
+library(dplyr)
+
+scale2 <- function(x, na.rm = TRUE) (x - mean(x, na.rm = na.rm)) / sd(x, na.rm)
+#"\t", escape_double = FALSE, trim_ws = TRUE)
+PGS_1e4_RAPIDO <- read_table2("~/Google Drive/PhD/Data/ukbiobank/UKB_UKB380_PGS_inner.sscore")
+#PGS_1e4_RAPIDO <- read_table2("~/Downloads/UKB_META_AFR_inner.sscore")
+
+
+names(PGS_1e4_RAPIDO)[2]<-"id"
+PGS_1e4_RAPIDO <- inner_join(PGS_1e4_RAPIDO, collated, by="id")
+PGS_1e4_RAPIDO$SCORE = PGS_1e4_RAPIDO$SCORE1_AVG
+
+#Import additional variables
+#populations <- read_csv("~/Google Drive/PhD/Data/ukbiobank/populations.csv")
+#PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% subset(populations, pop=="EUR")$s)
+
+#Remove any duplicated cystatin measurements, pick earliest measurement
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[order(PGS_1e4_RAPIDO$visit),]
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[!duplicated(PGS_1e4_RAPIDO$id),]
+
+#Validation cohort
+validation_cohort <- read_delim("~/Google Drive/PhD/Data/ukbiobank/validation_cohort.tsv",
+"\t", escape_double = FALSE, trim_ws = TRUE)
+PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% validation_cohort$s)
+
+#Normalize score
+PGS_1e4_RAPIDO$score_scale = scale2(PGS_1e4_RAPIDO$SCORE)
+PGS_1e4_RAPIDO$score_decile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 10))
+PGS_1e4_RAPIDO$score_quartile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 4))
+
+PGS_1e4_RAPIDO$prediction = predict(model, newdata=PGS_1e4_RAPIDO)
+PGS_1e4_RAPIDO$cortiscore = PGS_1e4_RAPIDO$prediction - PGS_1e4_RAPIDO$egfr_cystatin
+
+PGS_1e4_RAPIDO$cortiscore= scale2(PGS_1e4_RAPIDO$cortiscore)
+
+library(ggpubr)
+
+ggboxplot(PGS_1e4_RAPIDO, "score_decile", "cortiscore",
+   color = "black", fill = "grey",outlier.shape = NA)+ylim(-3.7,3.7)+ylab("CyC-residual (Z-score)")+xlab("CyC-production PRS (Z-score)")
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figure1g_csa.pdf', width=5, height=3)
+
+```
+
+```{r diurnalcyc}
+
+library(readxl)
+library(ggpubr)
+pnas_proteome <- read_excel("~/Downloads/DepneretalPNASDataset_4302018.xlsx")
+#pnas_proteome$`Cystatin C`=scale2(pnas_proteome$`Cystatin C`)
+pnas_proteome = subset(pnas_proteome, pnas_proteome$`Study Day`==2)
+pnas_proteome = subset(pnas_proteome, !(pnas_proteome$TimePoint %in% c(3,7,11,19,23)))
+#pnas_proteome$TimePoint[pnas_proteome$`Study Day`!=2]=pnas_proteome$TimePoint[pnas_proteome$`Study Day`!=2]+24
+
+pnas_proteome$Subject=as.factor(pnas_proteome$Subject)
+
+pnas_proteome = pnas_proteome %>% group_by(Subject) %>% mutate(norm_cyc = log2(`Cystatin C`/first(`Cystatin C`)))
+
+
+ggline(pnas_proteome, "TimePoint", "norm_cyc",
+   color = "Subject", xlab="Time (24h clock)")
+
+ggline(pnas_proteome, x = "TimePoint", y = "norm_cyc", add = "mean_se")
+
+library(cosinor2)
+
+process = dcast(pnas_proteome, Subject ~ TimePoint, value.var='norm_cyc')
+process=process[,-1]
+#process=process[,c(1,3,5,7,9,11)]
+fit.panas.cosinor <- population.cosinor.lm(data = process, time = as.numeric(names(process)), period = 24)
+cosinor.detect(fit.panas.cosinor)
+
+
+```
+
+```{r mr_valid}
+
+#MR validation
+
+library(readr)
+library(dplyr)
+
+scale2 <- function(x, na.rm = TRUE) (x - mean(x, na.rm = na.rm)) / sd(x, na.rm)
+PGS_1e4_RAPIDO <- read_table2("~/Downloads/ukb_cornet_mr_validation.sscore")
+
+names(PGS_1e4_RAPIDO)[2]<-"id"
+PGS_1e4_RAPIDO <- inner_join(PGS_1e4_RAPIDO, collated, by="id")
+PGS_1e4_RAPIDO$SCORE = PGS_1e4_RAPIDO$SCORE1_AVG
+
+#Remove any duplicated cystatin measurements, pick earliest measurement
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[order(PGS_1e4_RAPIDO$visit),]
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[!duplicated(PGS_1e4_RAPIDO$id),]
+
+#Normalize score
+PGS_1e4_RAPIDO$score_scale = scale2(PGS_1e4_RAPIDO$SCORE)
+PGS_1e4_RAPIDO$score_decile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 10))
+PGS_1e4_RAPIDO$score_quartile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 4))
+
+PGS_1e4_RAPIDO$prediction = predict(model, newdata=PGS_1e4_RAPIDO)
+PGS_1e4_RAPIDO$cortiscore = PGS_1e4_RAPIDO$prediction - PGS_1e4_RAPIDO$egfr_cystatin
+
+PGS_1e4_RAPIDO$cortiscore= scale2(PGS_1e4_RAPIDO$cortiscore)
+
+library(ggpubr)
+
+ggboxplot(PGS_1e4_RAPIDO, "score_decile", "cortiscore",
+   color = "black", fill = "grey",outlier.shape = NA)+ylim(-3.7,3.7)
+
+
+```
+
+
+
+## Add parent data
+
+```{r parents}
+#Parents' age
+
+id_codes=c("fathers_age_f2946","mothers_age_f1845","father_still_alive_f1797","mother_still_alive_f1835","fathers_age_at_death_f1807","mothers_age_at_death_f3526")
+
+
+my_data <- list()
+
+for(i in 1:length(id_codes)) {
+  sub<-df[,grepl(paste(c("eid",id_codes[i]), collapse="|"), names(df))]
+  long <- melt(sub, id.vars="eid")
+  long$variable <- sub('.*_', '', gsub('_0(.*)','\\1',long$variable))
+
+  names(long)<-c("eid","visit",id_codes[i])
+  my_data[[i]] <- long
+}
+
+parents<-my_data %>% reduce(full_join, by = c("eid","visit"))
+parents<-parents[rowSums(!is.na(parents)) > 2,]
+names(parents)[1]<-"id"
+
+parents = parents[order(parents$visit, decreasing = TRUE),]
+parents = parents[!duplicated(parents$id),]
+
+parents$father_age <- NA
+parents$mother_age <- NA
+parents$father_stat <- NA
+parents$mother_stat <- NA
+
+parents = subset(parents, !(is.na(father_still_alive_f1797) | is.na(mother_still_alive_f1835)))
+parents[parents==-1] <- NA
+
+parents = subset(parents, id %in% validation_cohort$s)
+
+for(i in 1:nrow(parents)) {
+  
+  row = parents[i,]
+  if(row$father_still_alive_f1797=="Yes") {
+    parents$father_stat[i] = 0
+    parents$father_age[i] = row$fathers_age_f2946
+  }
+  if(row$father_still_alive_f1797=="No") {
+    parents$father_stat[i] = 1
+    parents$father_age[i] = row$fathers_age_at_death_f1807
+  }
+  if(row$mother_still_alive_f1835=="Yes") {
+    parents$mother_stat[i] = 0
+    parents$mother_age[i] = row$mothers_age_f1845
+  }
+  if(row$mother_still_alive_f1835=="No") {
+    parents$mother_stat[i] = 1
+    parents$mother_age[i] = row$mothers_age_at_death_f3526
+  }
+  
+}
+
+parents = parents[,-2]
+
+collated<-left_join(collated, parents, by="id")
+```
+
+
+
+## Cox regression - all cause
+
+```{r regression,fig.height = 6, fig.width = 14}}
+comb = data.frame()
+
+library(finalfit)
+library(survival)
+
+collated$age <- collated$age_when_attended_assessment_centre_f21003
+collated$CyC_residual<-collated$scale_cortiscore
+collated$BMI<-scale2(collated$body_mass_index_bmi_f21001)
+collated$hemoglobin<-scale2(collated$haemoglobin_concentration_f30020)
+collated$CRP <- scale2(collated$creactive_protein_f30710)
+collated$egfr_creatinine <-scale2(collated$egfr_creatinine)
+collated <- collated %>% mutate(sex=as.factor(sex))
+
+explanatory = c("age","sex","CyC_residual","BMI",
+                "CRP","hemoglobin","egfr_creatinine")
+
+dependent = "Surv(time, dead)"
+
+
+
+collated %>%
+  coxphmulti(dependent, explanatory) %>%
+  fit2df(digits = c(2, 2, 8)) -> t1
+
+knitr::kable(t1, row.names=FALSE)
+
+collated %>%
+  hr_plot(dependent, explanatory, dependent_label = "All-cause mortality",title_text_size=24,
+          remove_ref=TRUE, table_text_size=4)
+
+res.cox <- coxph(Surv(time, dead) ~ CyC_residual + age + sex  + BMI + CRP +hemoglobin + egfr_creatinine, data = collated)
+test = summary(res.cox)
+
+add = data.frame(comparison="all_cause_mortality", HR = test$conf.int[1,1], lower = test$conf.int[1,3],
+                 upper = test$conf.int[1,4])
+comb = rbind(comb, add)
+
+```
+
+## Forest plot - residual
+
+```{r regression4,fig.height = 6, fig.width = 14}}
+
+comb %>% dplyr::mutate(comparison = factor(comparison, levels = c("cancer_specific_mortality", "covid_specific_mortality","all_cause_mortality"))) %>% ggplot(
+    aes(x = comparison,y = HR, ymin = lower, ymax = upper ))+
+    geom_pointrange(aes(col=comparison))+
+    geom_hline(aes(fill=comparison),yintercept =1, linetype=2)+
+    xlab('Group')+ ylab("Hazard Ratio (95% Confidence Interval)")+
+    geom_errorbar(aes(ymin=lower, ymax=upper,col=comparison),width=0.5,cex=1)+ 
+    theme(plot.title=element_text(size=16,face="bold"),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x=element_text(face="bold"),
+        axis.title=element_text(size=12,face="bold"),
+        strip.text.y = element_text(hjust=0,vjust = 1,angle=180,face="bold"))+
+    coord_flip()+theme_bw()+xlab("")+ theme(legend.position = "none") 
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figure4a.pdf', width=8, height=5)
+
+
+```
+
+## Cox regression - PRS
+
+```{r regression3,fig.height = 6, fig.width = 14}}
+
+comb2 = data.frame()
+
+library(readr)
+library(dplyr)
+
+scale2 <- function(x, na.rm = TRUE) (x - mean(x, na.rm = na.rm)) / sd(x, na.rm)
+PGS_1e4_RAPIDO <- read_table2("~/Google Drive/PhD/Data/ukbiobank/UKB380_PGS_LDPRED2_UKB.sscore")
+
+names(PGS_1e4_RAPIDO)[2]<-"id"
+PGS_1e4_RAPIDO <- inner_join(PGS_1e4_RAPIDO, collated, by="id")
+PGS_1e4_RAPIDO$SCORE = PGS_1e4_RAPIDO$SCORE1_AVG
+
+#Import additional variables
+populations <- read_csv("~/Google Drive/PhD/Data/ukbiobank/populations.csv")
+PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% subset(populations, pop=="EUR")$s)
+
+validation_cohort <- read_delim("~/Google Drive/PhD/Data/ukbiobank/validation_cohort.tsv", 
+                                "\t", escape_double = FALSE, trim_ws = TRUE)
+
+covariates <- read_table2("~/Google Drive/PhD/Data/ukbiobank/covariates_eur.tsv")
+names(covariates)[2]<-"id"
+
+
+PGS_1e4_RAPIDO = subset(PGS_1e4_RAPIDO, id %in% validation_cohort$s)
+PGS_1e4_RAPIDO = inner_join(PGS_1e4_RAPIDO, covariates, by="id")
+
+#Remove any duplicated cystatin measurements, pick earliest measurement
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[order(PGS_1e4_RAPIDO$visit),]
+PGS_1e4_RAPIDO = PGS_1e4_RAPIDO[!duplicated(PGS_1e4_RAPIDO$id),]
+
+#Normalize score
+PGS_1e4_RAPIDO$score_scale = scale2(PGS_1e4_RAPIDO$SCORE)
+PGS_1e4_RAPIDO$score_decile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 10))
+PGS_1e4_RAPIDO$score_quartile <- as.factor(ntile(PGS_1e4_RAPIDO$SCORE, 4))
+
+#Normalize covariates
+
+PGS_1e4_RAPIDO$prs_score = PGS_1e4_RAPIDO$score_scale
+PGS_1e4_RAPIDO$sex = as.factor(PGS_1e4_RAPIDO$sex.x)
+PGS_1e4_RAPIDO$year_of_birth = PGS_1e4_RAPIDO$year_of_birth.x
+PGS_1e4_RAPIDO$PC1 = scale2(PGS_1e4_RAPIDO$PC1)
+PGS_1e4_RAPIDO$PC2 = scale2(PGS_1e4_RAPIDO$PC2)
+PGS_1e4_RAPIDO$PC3 = scale2(PGS_1e4_RAPIDO$PC3)
+PGS_1e4_RAPIDO$PC4 = scale2(PGS_1e4_RAPIDO$PC4)
+
+#Subject
+
+explanatory = c("prs_score", "sex","year_of_birth","PC1","PC2","PC3","PC4")
+dependent = "Surv(age_at_death, dead)"
+
+PGS_1e4_RAPIDO %>%
+  hr_plot(dependent, explanatory, dependent_label = "Subject lifespan",table_text_size=4, title_text_size=24,
+          remove_ref=TRUE)
+
+res.cox <- coxph(Surv(age_at_death, dead) ~ prs_score + sex  + year_of_birth + PC1 + PC2 + PC3 +
+                   PC4 + centre + array, data = PGS_1e4_RAPIDO)
+test = summary(res.cox)
+
+add = data.frame(comparison="subject", HR = test$conf.int[1,1], lower = test$conf.int[1,3],
+                 upper = test$conf.int[1,4])
+comb2 = rbind(comb2, add)
+
+
+
+#Mother
+
+explanatory = c("prs_score", "PC1","PC2","PC3","PC4")
+dependent = "Surv(father_age, father_stat)"
+
+PGS_1e4_RAPIDO %>%
+  hr_plot(dependent, explanatory, dependent_label = "Mother lifespan",table_text_size=4, title_text_size=24,
+          remove_ref=TRUE)
+
+res.cox <- coxph(Surv(father_age, father_stat) ~ prs_score + PC1 + PC2 + PC3 +
+                   PC4 + centre + array + year_of_birth, data = PGS_1e4_RAPIDO)
+test = summary(res.cox)
+
+add = data.frame(comparison="father", HR = test$conf.int[1,1], lower = test$conf.int[1,3],
+                 upper = test$conf.int[1,4])
+comb2 = rbind(comb2, add)
+
+#Father
+
+explanatory = c("prs_score","PC1","PC2","PC3","PC4")
+dependent = "Surv(mother_age, mother_stat)"
+
+PGS_1e4_RAPIDO %>%
+  hr_plot(dependent, explanatory, dependent_label = "Father lifespan",table_text_size=4, title_text_size=24,
+          remove_ref=TRUE)
+
+res.cox <- coxph(Surv(mother_age, mother_stat) ~ prs_score + PC1 + PC2 + PC3 +
+                   PC4 + centre + array + year_of_birth, data = PGS_1e4_RAPIDO)
+test = summary(res.cox)
+
+add = data.frame(comparison="mother", HR = test$conf.int[1,1], lower = test$conf.int[1,3],
+                 upper = test$conf.int[1,4])
+comb2 = rbind(comb2, add)
+
+comb2 %>% ggplot(
+    aes(x = comparison,y = HR, ymin = lower, ymax = upper ))+
+    geom_pointrange(aes(col=comparison))+
+    geom_hline(aes(fill=comparison),yintercept =1, linetype=2)+
+    xlab('Group')+ ylab("Hazard Ratio (95% Confidence Interval)")+
+    geom_errorbar(aes(ymin=lower, ymax=upper,col=comparison),width=0.5,cex=1)+ 
+    theme(plot.title=element_text(size=16,face="bold"),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x=element_text(face="bold"),
+        axis.title=element_text(size=12,face="bold"),
+        strip.text.y = element_text(hjust=0,vjust = 1,angle=180,face="bold"))+
+    coord_flip()+theme_bw()+xlab("")+ theme(legend.position = "none") 
+
+ggsave('/Users/skleeman/Google Drive/PhD/Janowitz/cystatinc_share/figures/sub/figure4b.pdf', width=8, height=5)
+
+
+
+```
